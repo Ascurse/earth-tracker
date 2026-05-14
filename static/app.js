@@ -1,10 +1,31 @@
 // Earth Monitor - Terminal Style
 
-// === State ===
+// === Live state ===
+// Все значения сюда кладут реальные fetchи. До первого ответа — null.
+const live = {
+    airTemp: null,        // °C, среднее по 10 городам (Open-Meteo)
+    co2: null,            // ppm, Mauna Loa trend (NOAA via global-warming.org)
+    populationBase: null, // последнее годовое значение World Bank
+    populationGrowthPerSec: null, // прирост/сек, из дельты двух годов
+    populationBaseTime: null,     // момент, к которому привязан populationBase
+};
+
 let seenEventIds = new Set();
-let populationBase = 8123456789; // Base population (UN estimate ~2024)
-let hectaresLostBase = 0;
-let startTime = Date.now();
+const startTime = Date.now();
+
+// === Cities (для усреднения температуры) ===
+const CITIES = [
+    { name: 'Tokyo',          lat:  35.6895, lon: 139.6917 },
+    { name: 'New York',       lat:  40.7128, lon: -74.0060 },
+    { name: 'London',         lat:  51.5074, lon:  -0.1278 },
+    { name: 'Sydney',         lat: -33.8688, lon: 151.2093 },
+    { name: 'Moscow',         lat:  55.7558, lon:  37.6173 },
+    { name: 'Cairo',          lat:  30.0444, lon:  31.2357 },
+    { name: 'Rio de Janeiro', lat: -22.9068, lon: -43.1729 },
+    { name: 'Mumbai',         lat:  19.0760, lon:  72.8777 },
+    { name: 'Beijing',        lat:  39.9042, lon: 116.4074 },
+    { name: 'Cape Town',      lat: -33.9249, lon:  18.4241 },
+];
 
 // === Clock ===
 function updateClock() {
@@ -15,24 +36,35 @@ function updateClock() {
     document.getElementById('clock').textContent = `${h}:${m}:${s} UTC`;
 }
 
-// === Stats Updates ===
+// === Display tick: пересчитываем только то, что меняется каждую секунду ===
 function updateStats() {
-    // Ocean Temperature (simulated real-time fluctuation around 17.5°C global avg)
+    // Температура океана: симуляция вокруг глобального среднего ~17.5°C.
+    // Это не сенсор и не fetch — декоративная флуктуация, как было в первой версии.
     const oceanTemp = (17.5 + (Math.random() - 0.5) * 0.1).toFixed(2);
     updateValue('ocean-temp', oceanTemp);
 
-    // CO2 Level (simulated around 420+ ppm with slow increase)
-    const co2 = (421.5 + (Date.now() - startTime) / 3600000 * 0.0001 + (Math.random() - 0.5) * 0.5).toFixed(1);
-    updateValue('co2-level', co2);
+    // Температура воздуха: реальное среднее по 10 городам (Open-Meteo).
+    if (live.airTemp !== null) {
+        updateValue('air-temp', live.airTemp.toFixed(1));
+    }
 
-    // Deforestation Rate (~1.5 hectares per second globally)
-    const deforestRate = (1.5 + (Math.random() - 0.5) * 0.3).toFixed(2);
+    // CO2: реальное последнее измерение Mauna Loa (обновляется ежедневно)
+    if (live.co2 !== null) {
+        updateValue('co2-level', live.co2.toFixed(2));
+    }
+
+    // Лесные потери: глобальная оценка FAO ~10 млн га/год ≈ 0.317 га/сек.
+    // Источник реальный (FAO Global Forest Resources Assessment), но величина — оценка, не realtime поток.
+    const deforestRate = (0.317 + (Math.random() - 0.5) * 0.05).toFixed(2);
     updateValue('deforest-rate', deforestRate);
-    
-    // Population counter (increases by ~2.5 people per second globally)
-    const elapsed = (Date.now() - startTime) / 1000;
-    const population = Math.floor(populationBase + elapsed * 2.5);
-    updateValue('population', formatPopulation(population));
+
+    // Население: линейная интерполяция от последнего годового значения World Bank
+    // с реальным темпом роста, вычисленным по дельте двух последних лет.
+    if (live.populationBase !== null && live.populationGrowthPerSec !== null) {
+        const elapsed = (Date.now() - live.populationBaseTime) / 1000;
+        const population = Math.floor(live.populationBase + elapsed * live.populationGrowthPerSec);
+        updateValue('population', formatPopulation(population));
+    }
 }
 
 function updateValue(id, value) {
@@ -48,7 +80,58 @@ function formatPopulation(num) {
     return num.toLocaleString('en-US');
 }
 
-// === Seismic Energy ===
+// === Temperature (Open-Meteo, 10 cities, multi-coord) ===
+async function fetchTemperature() {
+    try {
+        const lats = CITIES.map(c => c.lat).join(',');
+        const lons = CITIES.map(c => c.lon).join(',');
+        const url = `https://api.open-meteo.com/v1/forecast?latitude=${lats}&longitude=${lons}&current=temperature_2m`;
+        const res = await fetch(url);
+        const data = await res.json();
+        const arr = Array.isArray(data) ? data : [data];
+        const temps = arr
+            .map(r => r?.current?.temperature_2m)
+            .filter(v => typeof v === 'number');
+        if (temps.length === 0) return;
+        live.airTemp = temps.reduce((a, b) => a + b, 0) / temps.length;
+    } catch (_) {
+        // оставляем прошлое значение
+    }
+}
+
+// === CO2 (Mauna Loa, ежедневный trend) ===
+async function fetchCO2() {
+    try {
+        const res = await fetch('https://global-warming.org/api/co2-api');
+        const data = await res.json();
+        const arr = data?.co2 || [];
+        const last = arr[arr.length - 1];
+        const value = parseFloat(last?.trend ?? last?.cycle);
+        if (!Number.isNaN(value)) live.co2 = value;
+    } catch (_) { /* keep previous */ }
+}
+
+// === Population base (World Bank, годовые значения) ===
+async function fetchPopulation() {
+    try {
+        const url = 'https://api.worldbank.org/v2/country/WLD/indicator/SP.POP.TOTL?format=json&per_page=5&date=2020:2030';
+        const res = await fetch(url);
+        const data = await res.json();
+        const rows = (data?.[1] || []).filter(r => typeof r.value === 'number');
+        if (rows.length < 2) return;
+        // World Bank возвращает по убыванию года
+        rows.sort((a, b) => parseInt(b.date) - parseInt(a.date));
+        const latest = rows[0];
+        const prev   = rows[1];
+        const secondsInYear = 365.25 * 24 * 3600;
+        live.populationBase = latest.value;
+        live.populationGrowthPerSec = (latest.value - prev.value) / secondsInYear;
+        // Привяжем базу к середине последнего года, так интерполяция к "сейчас" честнее
+        live.populationBaseTime = Date.UTC(parseInt(latest.date), 6, 1); // 1 июля
+    } catch (_) { /* keep previous */ }
+}
+
+// === Seismic Energy (USGS) ===
 const USGS_FEED = 'https://earthquake.usgs.gov/earthquakes/feed/v1.0/summary/significant_month.geojson';
 
 async function fetchSeismicData() {
@@ -63,133 +146,373 @@ async function fetchSeismicData() {
             time: f.properties?.time ?? 0,
         }));
 
-        // Calculate total energy from magnitudes (simplified Gutenberg-Richter)
+        // Энергия по формуле Гутенберга-Рихтера; сумма по топ-10 значимых землетрясений за последние 30 дней.
         let totalEnergy = 0;
         events.forEach(e => {
-            // E = 10^(1.5*M + 4.8) in Joules (simplified)
             totalEnergy += Math.pow(10, 1.5 * (e.mag || 0) + 4.8);
         });
-        
-        // Format as scientific notation
-        const energyStr = totalEnergy.toExponential(2);
-        updateValue('seismic-energy', energyStr);
-        
-        // Check for new critical events
+        updateValue('seismic-energy', totalEnergy.toExponential(2));
+
         events.forEach(event => {
             if (!seenEventIds.has(event.id)) {
                 seenEventIds.add(event.id);
-                
                 const isCritical = event.mag >= 6.0;
                 const type = isCritical ? 'critical' : 'warning';
                 const prefix = isCritical ? '!!! CRITICAL' : '>> DETECTED';
-                
                 addLogEntry(
                     `${prefix}: EARTHQUAKE M${event.mag.toFixed(1)} | ${event.place}`,
-                    type
+                    type,
+                    'real'
                 );
             }
         });
-        
-    } catch (err) {
-        // Silent fail
-    }
+    } catch (_) { /* keep previous */ }
 }
 
-// === Event Log ===
-function addLogEntry(message, type = 'info') {
-    const log = document.getElementById('event-log');
-    const entry = document.createElement('div');
-    
-    const now = new Date();
-    const timestamp = `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')}:${String(now.getUTCSeconds()).padStart(2, '0')}`;
-    
-    entry.className = `log-entry ${type}`;
-    
-    const fullMessage = `[${timestamp}] ${message}`;
-    
-    // Create text node and cursor
-    const textSpan = document.createElement('span');
-    const cursor = document.createElement('span');
-    cursor.className = 'typing-cursor';
-    
-    entry.appendChild(textSpan);
-    entry.appendChild(cursor);
-    log.appendChild(entry);
-    
-    // Typewriter effect - type out character by character
-    let charIndex = 0;
-    const typeSpeed = 15; // milliseconds per character
-    
-    function typeNextChar() {
-        if (charIndex < fullMessage.length) {
-            textSpan.textContent += fullMessage.charAt(charIndex);
-            charIndex++;
-            // Auto-scroll as we type
-            log.scrollTop = log.scrollHeight;
-            setTimeout(typeNextChar, typeSpeed);
-        } else {
-            // Remove cursor when done typing
-            cursor.remove();
+// === Natural events (NASA EONET v3) ===
+const EONET_FEED = 'https://eonet.gsfc.nasa.gov/api/v3/events?status=open&limit=30';
+const seenEonetIds = new Set();
+
+function classifyEonet(category, mag, unit) {
+    const c = (category || '').toLowerCase();
+    if (c.includes('volcano')) {
+        return { prefix: '!!! CRITICAL: VOLCANIC ACTIVITY', type: 'critical' };
+    }
+    if (c.includes('severe storm')) {
+        // wind in knots; >= 64 kt = ураган
+        const isHurricane = (unit && unit.toLowerCase().startsWith('kt') && mag >= 64);
+        return isHurricane
+            ? { prefix: '!!! CRITICAL: HURRICANE-FORCE STORM', type: 'critical' }
+            : { prefix: '>> DETECTED: SEVERE STORM', type: 'warning' };
+    }
+    if (c.includes('wildfire')) {
+        const huge = (unit && unit.toLowerCase().startsWith('acre') && mag >= 50000);
+        return huge
+            ? { prefix: '!!! CRITICAL: WILDFIRE', type: 'critical' }
+            : { prefix: '>> DETECTED: WILDFIRE', type: 'warning' };
+    }
+    if (c.includes('sea and lake ice')) {
+        return { prefix: '>> DETECTED: SEA ICE EVENT', type: 'warning' };
+    }
+    if (c.includes('flood')) {
+        return { prefix: '!!! CRITICAL: FLOOD', type: 'critical' };
+    }
+    if (c.includes('landslide')) {
+        return { prefix: '!!! CRITICAL: LANDSLIDE', type: 'critical' };
+    }
+    if (c.includes('drought')) {
+        return { prefix: '>> DETECTED: DROUGHT', type: 'warning' };
+    }
+    if (c.includes('temperature extreme')) {
+        return { prefix: '>> DETECTED: TEMP EXTREME', type: 'warning' };
+    }
+    if (c.includes('dust') || c.includes('haze')) {
+        return { prefix: '>> DETECTED: DUST EVENT', type: 'warning' };
+    }
+    if (c.includes('snow')) {
+        return { prefix: '>> DETECTED: SNOW EVENT', type: 'warning' };
+    }
+    return { prefix: '>> NOTED', type: 'info' };
+}
+
+async function fetchEonetEvents() {
+    try {
+        const res = await fetch(EONET_FEED);
+        const data = await res.json();
+        const events = data?.events || [];
+        for (const ev of events) {
+            if (!ev?.id || seenEonetIds.has(ev.id)) continue;
+            seenEonetIds.add(ev.id);
+
+            const cat = ev.categories?.[0]?.title || 'Event';
+            const lastGeom = ev.geometry?.[ev.geometry.length - 1];
+            const mag = lastGeom?.magnitudeValue;
+            const unit = lastGeom?.magnitudeUnit;
+            const { prefix, type } = classifyEonet(cat, mag, unit);
+            const tail = (mag !== undefined && mag !== null && unit) ? ` | ${mag} ${unit}` : '';
+            addLogEntry(`${prefix}: ${ev.title}${tail}`, type, 'real');
         }
-    }
-    
-    typeNextChar();
-    
-    // Keep log size reasonable
-    while (log.children.length > 200) {
-        log.removeChild(log.firstChild);
-    }
+    } catch (_) { /* keep previous */ }
 }
 
-// === Simulated Events ===
+// === Decorative scripted events ===
+// Эти строки не приходят из API — они художественная декорация ленты, чтобы
+// между реальными ивентами было «дыхание». По решению пользователя без [SIM].
 const criticalEvents = [
-    { msg: 'EXTREME HEAT WAVE detected in Southern Europe | +4.2°C above normal', type: 'critical' },
-    { msg: 'HURRICANE CATEGORY 4 forming in Atlantic | Wind speed: 250 km/h', type: 'critical' },
-    { msg: 'ARCTIC ICE SHELF collapse detected | Area: 12,000 km²', type: 'critical' },
-    { msg: 'VOLCANIC ACTIVITY alert: Mt. Etna | Lava flow confirmed', type: 'critical' },
-    { msg: 'OCEAN ACIDIFICATION spike in Pacific | pH: 7.95', type: 'critical' },
-    { msg: 'FOREST FIRE spreading in Amazon | Area: 45,000 hectares', type: 'critical' },
-    { msg: 'CORAL BLEACHING event in Great Barrier Reef | 30% affected', type: 'critical' },
-    { msg: 'METHANE LEAK detected in Siberian permafrost', type: 'critical' },
+    'EXTREME HEAT WAVE detected in Southern Europe | +4.2°C above normal',
+    'HURRICANE CATEGORY 4 forming in Atlantic | Wind speed: 250 km/h',
+    'ARCTIC ICE SHELF collapse detected | Area: 12,000 km²',
+    'OCEAN ACIDIFICATION spike in Pacific | pH: 7.95',
+    'CORAL BLEACHING event in Great Barrier Reef | 30% affected',
+    'METHANE LEAK detected in Siberian permafrost',
+    'ATMOSPHERIC RIVER landfall on Pacific coast | 400 mm/24h forecast',
 ];
 
 const warningEvents = [
-    { msg: 'Temperature anomaly detected in Arctic region | +2.1°C', type: 'warning' },
-    { msg: 'Tropical storm forming near Philippines', type: 'warning' },
-    { msg: 'Air quality index elevated in New Delhi | AQI: 280', type: 'warning' },
-    { msg: 'Drought conditions worsening in East Africa', type: 'warning' },
-    { msg: 'Glacier retreat accelerating in Alps', type: 'warning' },
-    { msg: 'Sea level rise measurement: +3.4mm/year', type: 'warning' },
-    { msg: 'Ozone layer thinning detected over Antarctica', type: 'warning' },
+    'Temperature anomaly detected in Arctic region | +2.1°C',
+    'Tropical depression organizing near Philippines',
+    'Air quality index elevated in New Delhi | AQI: 280',
+    'Drought conditions worsening in East Africa',
+    'Glacier retreat accelerating in Alps',
+    'Sea level rise measurement: +3.4 mm/year',
+    'Ozone column thinning over Antarctica',
+    'Phytoplankton bloom detected off Patagonia coast',
 ];
 
 const infoEvents = [
-    { msg: 'Global sensor network sync complete', type: 'info' },
-    { msg: 'Satellite telemetry received: NOAA-20', type: 'info' },
-    { msg: 'Weather station data updated: 847 stations', type: 'info' },
-    { msg: 'Ocean buoy network ping: 234 active', type: 'info' },
-    { msg: 'Seismograph array calibration complete', type: 'info' },
-    { msg: 'CO2 sensor array sync: Mauna Loa station', type: 'info' },
+    'Global sensor network sync complete',
+    'Satellite telemetry received: NOAA-20',
+    'Weather station data updated: 847 stations',
+    'Ocean buoy network ping: 234 active',
+    'Seismograph array calibration complete',
+    'Aurora oval forecast updated',
+    'Argo float profile uploaded: 3924 active drifters',
 ];
 
+function pickRandom(arr) {
+    return arr[Math.floor(Math.random() * arr.length)];
+}
+
 function generateRandomEvent() {
-    const rand = Math.random();
-    
-    if (rand < 0.05) {  // 5% chance of critical event
-        const event = criticalEvents[Math.floor(Math.random() * criticalEvents.length)];
-        addLogEntry(event.msg, event.type);
-    } else if (rand < 0.15) {  // 10% chance of warning
-        const event = warningEvents[Math.floor(Math.random() * warningEvents.length)];
-        addLogEntry(event.msg, event.type);
-    } else if (rand < 0.25) {  // 10% chance of info
-        const event = infoEvents[Math.floor(Math.random() * infoEvents.length)];
-        addLogEntry(event.msg, event.type);
+    const r = Math.random();
+    if      (r < 0.03) addLogEntry(pickRandom(criticalEvents), 'critical');
+    else if (r < 0.10) addLogEntry(pickRandom(warningEvents),  'warning');
+    else if (r < 0.25) addLogEntry(pickRandom(infoEvents),     'info');
+}
+
+// === System heartbeat (scripted technical chatter) ===
+// Раз в 10 секунд — фоновая телеметрия, чтобы лента всегда дышала.
+const randInt = (a, b) => Math.floor(a + Math.random() * (b - a + 1));
+const randFloat = (a, b, d) => (a + Math.random() * (b - a)).toFixed(d);
+const randHex = (len = 4) =>
+    Array.from({ length: len }, () => randInt(0, 15).toString(16).toUpperCase()).join('');
+
+const systemHeartbeat = [
+    () => `Uplink: GOES-18 telemetry stream | ${randInt(80, 260)} ms`,
+    () => `NOAA HRRR grid polled | ${randInt(8, 22)} MB received`,
+    () => `JMA seismic mirror sync | OK`,
+    () => `TLE refresh: ISS, Hubble, Aqua, Terra`,
+    () => `NASA EOSDIS bandwidth: ${randFloat(20, 80, 1)} Mbps`,
+    () => `Tile cache rotated | ${randInt(800, 2400)} entries purged`,
+    () => `NTP resync | drift ${randFloat(0.4, 3.2, 2)} ms`,
+    () => `Argo float metadata sync | ${randInt(3800, 4100)} drifters active`,
+    () => `Sentinel-2 catalog ping | ${randInt(20, 180)} ms`,
+    () => `SWPC space weather scale: G${randInt(0, 3)}`,
+    () => `DNS prefetch | usgs.gov, eonet.gsfc.nasa.gov, open-meteo.com`,
+    () => `Worker thread #${randInt(1, 8)} idle`,
+    () => `Snapshot uploaded to archive | ${randFloat(0.3, 4.2, 1)} MB`,
+    () => `Anomaly detector | scoring batch 0x${randHex(4)}`,
+    () => `Buffer pressure: ${randInt(10, 70)}% / 80%`,
+    () => `Auth token rotated`,
+    () => `Mission ops heartbeat | seq ${randInt(1000, 9999)}`,
+    () => `MODIS Aqua granule ingested | tile h${randInt(0, 35).toString().padStart(2, '0')}v${randInt(0, 17).toString().padStart(2, '0')}`,
+    () => `Kafka topic 'telemetry.raw' lag: ${randInt(0, 120)} ms`,
+    () => `Cold storage tier replicated | ${randInt(1, 6)} shards`,
+    () => `SWPC alert poll | ${randInt(20, 200)} ms`,
+    () => `GDACS feed sync | ${randInt(60, 320)} ms`,
+    () => `EMSC seismic mirror ping | ${randInt(40, 240)} ms`,
+];
+
+function emitSystemHeartbeat() {
+    const factory = pickRandom(systemHeartbeat);
+    addLogEntry(factory(), 'system');
+}
+
+// === SWPC space weather alerts (NOAA) ===
+const SWPC_FEED = 'https://services.swpc.noaa.gov/products/alerts.json';
+const seenSwpcIds = new Set();
+
+function summarizeSwpcMessage(message) {
+    if (!message) return null;
+    // Headline вида "WARNING: Geomagnetic K-index of 4 expected"
+    const m = message.match(/^(WARNING|WATCH|ALERT|SUMMARY|EXTENDED WARNING):\s*([^\r\n]+)/m);
+    return m ? { kind: m[1], headline: m[2].trim() } : null;
+}
+
+function classifySwpc(headline) {
+    const h = (headline || '').toUpperCase();
+    if (/G[45]/.test(h))                       return { type: 'critical', prefix: '!!! CRITICAL: SEVERE GEOMAG STORM' };
+    if (/G3/.test(h))                          return { type: 'warning',  prefix: '>> DETECTED: STRONG GEOMAG STORM' };
+    if (/G[12]/.test(h))                       return { type: 'warning',  prefix: '>> DETECTED: GEOMAG STORM' };
+    if (/S[345]/.test(h))                      return { type: 'critical', prefix: '!!! CRITICAL: RADIATION STORM' };
+    if (/S[12]/.test(h))                       return { type: 'warning',  prefix: '>> DETECTED: RADIATION STORM' };
+    if (/R[345]/.test(h))                      return { type: 'critical', prefix: '!!! CRITICAL: RADIO BLACKOUT' };
+    if (/R[12]/.test(h))                       return { type: 'warning',  prefix: '>> DETECTED: RADIO BLACKOUT' };
+    if (/X\d/.test(h) && /FLARE|XRAY/.test(h)) return { type: 'critical', prefix: '!!! CRITICAL: X-CLASS SOLAR FLARE' };
+    if (/M\d/.test(h) && /FLARE|XRAY/.test(h)) return { type: 'warning',  prefix: '>> DETECTED: M-CLASS SOLAR FLARE' };
+    if (/CORONAL MASS EJECTION|\bCME\b/.test(h)) return { type: 'warning', prefix: '>> DETECTED: CORONAL MASS EJECTION' };
+    if (/PROTON|ELECTRON/.test(h))             return { type: 'warning',  prefix: '>> DETECTED: PARTICLE FLUX' };
+    return { type: 'info', prefix: '>> NOTED: SPACE WX' };
+}
+
+async function fetchSwpcAlerts() {
+    try {
+        const res = await fetch(SWPC_FEED);
+        const data = await res.json();
+        if (!Array.isArray(data)) return;
+        const cutoff = Date.now() - 7 * 24 * 3600 * 1000; // только за последние 7 дней
+        // sort by issue_datetime desc
+        const sorted = [...data].sort((a, b) =>
+            (b.issue_datetime || '').localeCompare(a.issue_datetime || ''));
+        for (const a of sorted) {
+            const id = (a.product_id || '') + '|' + (a.issue_datetime || '');
+            if (seenSwpcIds.has(id)) continue;
+            seenSwpcIds.add(id);
+            const ts = Date.parse((a.issue_datetime || '').replace(' ', 'T') + 'Z');
+            if (Number.isFinite(ts) && ts < cutoff) continue;
+            const sum = summarizeSwpcMessage(a.message);
+            if (!sum) continue;
+            const { type, prefix } = classifySwpc(sum.headline);
+            if (type === 'info') continue; // info-уровень не валим в ленту, слишком шумно
+            addLogEntry(`${prefix}: ${sum.headline}`, type, 'real');
+        }
+    } catch (_) { /* keep previous */ }
+}
+
+// === GDACS global disasters (red/orange only) ===
+const GDACS_FEED = 'https://www.gdacs.org/gdacsapi/api/events/geteventlist/MAP';
+const seenGdacsIds = new Set();
+const GDACS_TYPE_LABELS = {
+    EQ: 'EARTHQUAKE',
+    TC: 'TROPICAL CYCLONE',
+    FL: 'FLOOD',
+    VO: 'VOLCANIC EVENT',
+    DR: 'DROUGHT',
+    WF: 'WILDFIRE',
+    MS: 'LANDSLIDE',
+};
+
+async function fetchGdacsEvents() {
+    try {
+        const res = await fetch(GDACS_FEED);
+        const data = await res.json();
+        const feats = data?.features || [];
+        for (const f of feats) {
+            const p = f.properties || {};
+            const id = `${p.eventid}-${p.episodeid}`;
+            if (seenGdacsIds.has(id)) continue;
+            seenGdacsIds.add(id);
+            const level = (p.alertlevel || '').toLowerCase();
+            if (level !== 'red' && level !== 'orange') continue;
+            const label = GDACS_TYPE_LABELS[p.eventtype] || String(p.eventtype || 'EVENT').toUpperCase();
+            const type   = (level === 'red') ? 'critical' : 'warning';
+            const prefix = (level === 'red') ? `!!! CRITICAL: ${label}` : `>> DETECTED: ${label}`;
+            const sev = p.severitydata?.severitytext;
+            const tail = sev ? ` | ${sev}` : '';
+            addLogEntry(`${prefix}: ${p.name || 'unknown location'}${tail}`, type, 'real');
+        }
+    } catch (_) { /* keep previous */ }
+}
+
+// === EMSC seismic feed (M >= 4.5, last 15) ===
+const EMSC_FEED = 'https://www.seismicportal.eu/fdsnws/event/1/query?format=json&minmag=4.5&orderby=time&limit=15';
+const seenEmscIds = new Set();
+
+async function fetchEmscEvents() {
+    try {
+        const res = await fetch(EMSC_FEED);
+        const data = await res.json();
+        const feats = data?.features || [];
+        for (const f of feats) {
+            const id = f.id;
+            if (!id || seenEmscIds.has(id)) continue;
+            seenEmscIds.add(id);
+            const p = f.properties || {};
+            const mag = Number(p.mag) || 0;
+            const place = p.flynn_region || 'Unknown';
+            const depth = Number(p.depth);
+            let type, prefix;
+            if      (mag >= 6.0) { type = 'critical'; prefix = '!!! CRITICAL: EARTHQUAKE'; }
+            else if (mag >= 5.0) { type = 'warning';  prefix = '>> DETECTED: EARTHQUAKE'; }
+            else                 { type = 'info';     prefix = '>> NOTED: SEISMIC EVENT'; }
+            const depthTail = Number.isFinite(depth) ? ` | depth ${depth.toFixed(0)} km` : '';
+            addLogEntry(`${prefix} M${mag.toFixed(1)} | ${place}${depthTail}`, type, 'real');
+        }
+    } catch (_) { /* keep previous */ }
+}
+
+// === Event Log ===
+// Две очереди: реальные ивенты (USGS, EONET) и декорация (boot, scripted, heartbeat).
+// Воркер на каждой итерации с шансом 50/50 берёт из одной или другой, поэтому при
+// init пачка реальных событий не валится подряд — она «переплетается» с фоном.
+const realQueue = [];
+const decoQueue = [];
+let logWorkerRunning = false;
+
+const TYPE_SPEED_MS = 20;      // мс на символ в typewriter
+const INTER_MESSAGE_PAUSE_MS = 120; // пауза между сообщениями
+const MAX_LOG_ENTRIES = 200;
+
+function addLogEntry(message, type = 'info', channel = 'deco') {
+    const target = channel === 'real' ? realQueue : decoQueue;
+    target.push({ message, type });
+    if (!logWorkerRunning) {
+        logWorkerRunning = true;
+        processLogQueue();
     }
+}
+
+async function processLogQueue() {
+    while (realQueue.length || decoQueue.length) {
+        let queue;
+        if (realQueue.length && decoQueue.length) {
+            queue = Math.random() < 0.5 ? realQueue : decoQueue;
+        } else {
+            queue = realQueue.length ? realQueue : decoQueue;
+        }
+        const { message, type } = queue.shift();
+        await renderLogEntry(message, type);
+        if (realQueue.length || decoQueue.length) {
+            await sleep(INTER_MESSAGE_PAUSE_MS);
+        }
+    }
+    logWorkerRunning = false;
+}
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function renderLogEntry(message, type) {
+    return new Promise(resolve => {
+        const log = document.getElementById('event-log');
+        const entry = document.createElement('div');
+
+        const now = new Date();
+        const timestamp = `${String(now.getUTCHours()).padStart(2, '0')}:${String(now.getUTCMinutes()).padStart(2, '0')}:${String(now.getUTCSeconds()).padStart(2, '0')}`;
+
+        entry.className = `log-entry ${type}`;
+        const fullMessage = `[${timestamp}] ${message}`;
+
+        const textSpan = document.createElement('span');
+        const cursor = document.createElement('span');
+        cursor.className = 'typing-cursor';
+        entry.appendChild(textSpan);
+        entry.appendChild(cursor);
+        log.appendChild(entry);
+
+        let charIndex = 0;
+        function typeNextChar() {
+            if (charIndex < fullMessage.length) {
+                textSpan.textContent += fullMessage.charAt(charIndex);
+                charIndex++;
+                log.scrollTop = log.scrollHeight;
+                setTimeout(typeNextChar, TYPE_SPEED_MS);
+            } else {
+                cursor.remove();
+                while (log.children.length > MAX_LOG_ENTRIES) {
+                    log.removeChild(log.firstChild);
+                }
+                resolve();
+            }
+        }
+        typeNextChar();
+    });
 }
 
 // === Wake Lock (keep screen on, especially on iPad) ===
 function setupWakeLock() {
-    const NoSleepCtor = window.NoSleep;
+    const NoSleepCtor = window['NoSleep'];
     if (typeof NoSleepCtor !== 'function') return;
     const noSleep = new NoSleepCtor();
     let enabled = false;
@@ -209,25 +532,53 @@ function setupWakeLock() {
 }
 
 // === Initialize ===
-function init() {
+async function init() {
     setupWakeLock();
     addLogEntry('System boot sequence initiated...', 'system');
-    
-    setTimeout(() => addLogEntry('Connecting to NASA EOSDIS...', 'system'), 500);
-    setTimeout(() => addLogEntry('Connecting to NOAA satellite network...', 'system'), 1000);
-    setTimeout(() => addLogEntry('Connecting to USGS seismic network...', 'system'), 1500);
-    setTimeout(() => addLogEntry('Connecting to Global Carbon Project...', 'system'), 2000);
-    setTimeout(() => addLogEntry('All systems operational. Monitoring active.', 'info'), 2500);
-    
+    addLogEntry('Connecting to Open-Meteo weather grid...', 'system');
+    addLogEntry('Connecting to NOAA Mauna Loa CO2 record...', 'system');
+    addLogEntry('Connecting to USGS seismic network...', 'system');
+    addLogEntry('Connecting to World Bank population indicator...', 'system');
+    addLogEntry('Connecting to NASA EONET natural events...', 'system');
+    addLogEntry('Connecting to NOAA SWPC space weather...', 'system');
+    addLogEntry('Connecting to GDACS global disaster feed...', 'system');
+    addLogEntry('Connecting to EMSC seismic portal...', 'system');
+
     updateClock();
-    updateStats();
-    fetchSeismicData();
-    
-    // Update intervals
     setInterval(updateClock, 1000);
     setInterval(updateStats, 1000);
-    setInterval(fetchSeismicData, 30000);
-    setInterval(generateRandomEvent, 3000);
+
+    // Параллельные первые fetchи. Каждый сам логирует в случае успеха.
+    await Promise.allSettled([
+        fetchTemperature().then(() => {
+            if (live.airTemp !== null) addLogEntry(`Weather grid online. Avg surface air across ${CITIES.length} cities: ${live.airTemp.toFixed(1)}°C`, 'info');
+        }),
+        fetchCO2().then(() => {
+            if (live.co2 !== null) addLogEntry(`Mauna Loa CO2 trend: ${live.co2.toFixed(2)} ppm`, 'info');
+        }),
+        fetchPopulation().then(() => {
+            if (live.populationBase !== null) addLogEntry(`World Bank population baseline: ${formatPopulation(live.populationBase)} (mid-year)`, 'info');
+        }),
+        fetchSeismicData().then(() => addLogEntry('USGS seismic feed online.', 'info')),
+        fetchEonetEvents().then(() => addLogEntry(`EONET tracking ${seenEonetIds.size} open natural events.`, 'info')),
+        fetchSwpcAlerts().then(() => addLogEntry('NOAA SWPC space weather feed online.', 'info')),
+        fetchGdacsEvents().then(() => addLogEntry('GDACS global disaster feed online.', 'info')),
+        fetchEmscEvents().then(() => addLogEntry('EMSC seismic portal online.', 'info')),
+    ]);
+
+    addLogEntry('All systems operational. Monitoring active.', 'info');
+
+    // Refresh intervals
+    setInterval(fetchTemperature,  5 * 60 * 1000);   // 5 минут
+    setInterval(fetchCO2,         60 * 60 * 1000);   // 1 час
+    setInterval(fetchPopulation,  24 * 60 * 60 * 1000); // раз в сутки
+    setInterval(fetchSeismicData, 60 * 1000);        // 1 минута
+    setInterval(fetchEonetEvents,  5 * 60 * 1000);   // 5 минут
+    setInterval(fetchSwpcAlerts,   5 * 60 * 1000);   // 5 минут
+    setInterval(fetchGdacsEvents, 10 * 60 * 1000);   // 10 минут
+    setInterval(fetchEmscEvents,   2 * 60 * 1000);   // 2 минуты
+    setInterval(generateRandomEvent, 30 * 1000);     // декорация: раз в 30 с
+    setInterval(emitSystemHeartbeat, 10 * 1000);     // системная телеметрия: раз в 10 с
 }
 
 document.addEventListener('DOMContentLoaded', init);
