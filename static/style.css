@@ -1,0 +1,222 @@
+/* Terminal Theme */
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
+
+:root {
+    --bg: #0a0a0a;
+    --green: #00ff00;
+    --green-dim: #00aa00;
+    --green-dark: #004400;
+    --red: #ff3333;
+    --yellow: #ffff00;
+    --cyan: #00ffff;
+    --white: #ffffff;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'JetBrains Mono', 'Courier New', monospace;
+    background: var(--bg);
+    color: var(--green);
+    height: 100vh;
+    overflow: hidden;
+    font-size: 14px;
+    line-height: 1.4;
+}
+
+.terminal {
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    padding: 20px;
+}
+
+/* Header */
+.terminal-header {
+    display: flex;
+    justify-content: space-between;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--green-dark);
+    margin-bottom: 15px;
+}
+
+.header-title {
+    color: var(--green);
+    font-weight: 700;
+}
+
+.header-time {
+    color: var(--green-dim);
+}
+
+/* Stats Section */
+.stats-section {
+    flex-shrink: 0;
+    margin-bottom: 15px;
+}
+
+.stat-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    padding: 8px 0;
+    max-width: 800px;
+}
+
+.stat-data {
+    display: flex;
+    justify-content: flex-end;
+    align-items: baseline;
+    gap: 20px;
+}
+
+.stat-label {
+    color: var(--cyan);
+    min-width: 320px;
+    font-size: 24px;
+}
+
+.stat-value {
+    color: var(--green);
+    font-weight: 700;
+    min-width: 200px;
+    text-align: right;
+    font-size: 32px;
+}
+
+.stat-value.population {
+    min-width: 280px;
+}
+
+.stat-unit {
+    color: var(--green-dim);
+    min-width: 100px;
+    font-size: 20px;
+}
+
+.stat-source {
+    color: var(--green-dark);
+    font-size: 12px;
+}
+
+/* Divider */
+.divider {
+    color: var(--green-dark);
+    padding: 10px 0;
+    overflow: hidden;
+    white-space: nowrap;
+}
+
+.log-header {
+    color: var(--yellow);
+    font-weight: 700;
+    padding-bottom: 10px;
+}
+
+/* Event Log */
+.event-log {
+    flex: 1;
+    overflow-y: auto;
+    padding-right: 10px;
+}
+
+.event-log::-webkit-scrollbar {
+    width: 8px;
+}
+
+.event-log::-webkit-scrollbar-track {
+    background: var(--bg);
+}
+
+.event-log::-webkit-scrollbar-thumb {
+    background: var(--green-dark);
+}
+
+.log-entry {
+    padding: 3px 0;
+    border-left: 3px solid transparent;
+    padding-left: 10px;
+    margin-bottom: 2px;
+    animation: fadeIn 0.3s ease;
+}
+
+.log-entry.system {
+    color: var(--green-dim);
+    border-left-color: var(--green-dark);
+}
+
+.log-entry.info {
+    color: var(--green);
+    border-left-color: var(--green);
+}
+
+.log-entry.warning {
+    color: var(--yellow);
+    border-left-color: var(--yellow);
+}
+
+.log-entry.critical {
+    color: var(--red);
+    border-left-color: var(--red);
+    font-weight: 700;
+    animation: criticalPulse 1s ease-in-out, criticalGlow 2s ease-in-out infinite;
+    text-shadow: 0 0 10px var(--red);
+}
+
+/* Critical Event Animation */
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateX(-20px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes criticalPulse {
+    0% { 
+        background: rgba(255, 0, 0, 0.4);
+        transform: scale(1.02);
+    }
+    50% {
+        background: rgba(255, 0, 0, 0.2);
+    }
+    100% { 
+        background: transparent;
+        transform: scale(1);
+    }
+}
+
+@keyframes criticalGlow {
+    0%, 100% { 
+        text-shadow: 0 0 5px var(--red);
+    }
+    50% { 
+        text-shadow: 0 0 20px var(--red), 0 0 30px var(--red);
+    }
+}
+
+/* Stats update animation */
+.stat-value.updating {
+    animation: valueFlash 0.3s ease;
+}
+
+@keyframes valueFlash {
+    0% { color: var(--white); }
+    100% { color: var(--green); }
+}
+
+/* Typing cursor - blinking rectangle */
+.typing-cursor {
+    display: inline-block;
+    background: var(--green);
+    width: 0.6em;
+    height: 1.1em;
+    vertical-align: text-bottom;
+    animation: cursorBlink 0.5s step-end infinite;
+}
+
+@keyframes cursorBlink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0; }
+}

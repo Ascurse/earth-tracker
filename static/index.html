@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="Earth Monitor">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="theme-color" content="#0a0a0a">
+    <title>EARTH MONITOR</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/nosleep.js@0.12.0/dist/NoSleep.min.js"></script>
+</head>
+<body>
+    <div class="terminal">
+        <!-- Header -->
+        <div class="terminal-header">
+            <span class="header-title">EARTH_STATUS_MONITOR v2.1</span>
+            <span class="header-time" id="clock">00:00:00 UTC</span>
+        </div>
+
+        <!-- Fixed Stats Section -->
+        <div class="stats-section">
+            <div class="stat-row">
+                <span class="stat-label">AVG_OCEAN_TEMP</span>
+                <div class="stat-data">
+                    <span class="stat-value" id="ocean-temp">---</span>
+                    <span class="stat-unit">°C</span>
+                </div>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">CO2_CONCENTRATION</span>
+                <div class="stat-data">
+                    <span class="stat-value" id="co2-level">---</span>
+                    <span class="stat-unit">ppm</span>
+                </div>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">DEFORESTATION_RATE</span>
+                <div class="stat-data">
+                    <span class="stat-value" id="deforest-rate">---</span>
+                    <span class="stat-unit">ha/sec</span>
+                </div>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">SEISMIC_ENERGY</span>
+                <div class="stat-data">
+                    <span class="stat-value" id="seismic-energy">---</span>
+                    <span class="stat-unit">J/hr</span>
+                </div>
+            </div>
+            <div class="stat-row">
+                <span class="stat-label">POPULATION_COUNT</span>
+                <div class="stat-data">
+                    <span class="stat-value population" id="population">---</span>
+                    <span class="stat-unit">people</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="divider">════════════════════════════════════════════════════════════════════════════════</div>
+        <div class="log-header">[CRITICAL_EVENTS_LOG]</div>
+
+        <!-- Event Log -->
+        <div class="event-log" id="event-log">
+            <div class="log-entry system">[SYSTEM] Initializing monitoring systems...</div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
