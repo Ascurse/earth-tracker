@@ -220,3 +220,54 @@ body {
     0%, 100% { opacity: 1; }
     50% { opacity: 0; }
 }
+
+/* Lightning log entries — синие, с короткой "разрядной" вспышкой при появлении */
+.log-entry.lightning {
+    color: #9fd2ff;
+    border-left-color: #5ab0ff;
+    text-shadow: 0 0 6px rgba(90, 176, 255, 0.45);
+    animation: fadeIn 0.3s ease, lightningStrikeFlash 720ms ease-out;
+    position: relative;
+}
+
+/* Тонкий бликовый «росчерк» бежит слева направо по строке — быстро и ненавязчиво */
+.log-entry.lightning::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(
+        90deg,
+        transparent 0%,
+        rgba(159, 210, 255, 0.0) 35%,
+        rgba(214, 234, 255, 0.55) 50%,
+        rgba(159, 210, 255, 0.0) 65%,
+        transparent 100%
+    );
+    background-size: 200% 100%;
+    background-position: -100% 0;
+    mix-blend-mode: screen;
+    animation: lightningSweep 700ms ease-out forwards;
+}
+
+@keyframes lightningStrikeFlash {
+    0% {
+        background: rgba(90, 176, 255, 0.22);
+        text-shadow: 0 0 12px #9fd2ff, 0 0 24px rgba(90, 176, 255, 0.6);
+        border-left-color: #d6eaff;
+    }
+    30% {
+        background: rgba(90, 176, 255, 0.10);
+    }
+    100% {
+        background: transparent;
+        text-shadow: 0 0 6px rgba(90, 176, 255, 0.45);
+        border-left-color: #5ab0ff;
+    }
+}
+
+@keyframes lightningSweep {
+    0%   { background-position: -100% 0; opacity: 0; }
+    20%  { opacity: 1; }
+    100% { background-position: 200% 0; opacity: 0; }
+}

@@ -404,6 +404,108 @@ async function fetchGdacsEvents() {
     } catch (_) { /* keep previous */ }
 }
 
+// === NWS Active Alerts (USA) ===
+// Любой статус принимаем, фильтруем по severity. Параметр limit api отвергает.
+const NWS_FEED = 'https://api.weather.gov/alerts/active';
+const seenNwsIds = new Set();
+
+function classifyNws(event, severity) {
+    const sev = (severity || '').toLowerCase();
+    const e = (event || '').toUpperCase();
+    // Сильные погодные события всегда critical
+    if (/TORNADO|HURRICANE|TSUNAMI|EXTREME/.test(e)) {
+        return { type: 'critical', prefix: `!!! CRITICAL: ${e}` };
+    }
+    if (sev === 'extreme') return { type: 'critical', prefix: `!!! CRITICAL: ${e}` };
+    if (sev === 'severe')  return { type: 'critical', prefix: `!!! CRITICAL: ${e}` };
+    if (sev === 'moderate') return { type: 'warning', prefix: `>> DETECTED: ${e}` };
+    return null; // Minor / Unknown — игнорируем, чтобы не топить ленту
+}
+
+async function fetchNwsAlerts() {
+    try {
+        // NWS просит User-Agent — в браузере он подставляется автоматически.
+        const res = await fetch(NWS_FEED, { headers: { 'Accept': 'application/geo+json' } });
+        const data = await res.json();
+        const feats = data?.features || [];
+        for (const f of feats) {
+            const p = f.properties || {};
+            const id = p.id;
+            if (!id || seenNwsIds.has(id)) continue;
+            seenNwsIds.add(id);
+            const cls = classifyNws(p.event, p.severity);
+            if (!cls) continue;
+            const area = (p.areaDesc || '').split(';')[0].trim();
+            const tail = area ? ` | ${area}` : '';
+            addLogEntry(`${cls.prefix}${tail}`, cls.type, 'real');
+        }
+    } catch (_) { /* keep previous */ }
+}
+
+// === NASA FIRMS active fires ===
+// MAP_KEY получается бесплатно: https://firms.modaps.eosdis.nasa.gov/api/map_key/
+// Держим два ключа: если первый упёрся в rate-limit или Invalid — пробуем второй.
+const FIRMS_MAP_KEYS = [
+    '4cfcc0800f4bc99685269cbdfb5cf7f7',
+    '47f07a1685fa85024a86905e273e4e2f',
+];
+const FIRMS_SOURCE  = 'VIIRS_SNPP_NRT'; // NRT = near real-time
+const seenFirmsIds = new Set();
+
+async function tryFetchFirmsCsv() {
+    for (const key of FIRMS_MAP_KEYS) {
+        try {
+            const url = `https://firms.modaps.eosdis.nasa.gov/api/area/csv/${key}/${FIRMS_SOURCE}/world/1`;
+            const res = await fetch(url);
+            if (!res.ok) continue;
+            const text = await res.text();
+            const trimmed = text.trim();
+            // Ответ начинается с заголовка "latitude,longitude,..." — иначе это ошибка ("Invalid MAP_KEY.")
+            if (!trimmed || !trimmed.toLowerCase().startsWith('latitude')) continue;
+            return trimmed;
+        } catch (_) { /* try next key */ }
+    }
+    return null;
+}
+
+async function fetchFirmsFires() {
+    if (FIRMS_MAP_KEYS.length === 0) return;
+    try {
+        const csv = await tryFetchFirmsCsv();
+        if (!csv) return;
+        const lines = csv.split('\n');
+        if (lines.length < 2) return;
+        const header = lines[0].split(',');
+        const idxLat   = header.indexOf('latitude');
+        const idxLon   = header.indexOf('longitude');
+        const idxFrp   = header.indexOf('frp');
+        const idxConf  = header.indexOf('confidence');
+        const idxDate  = header.indexOf('acq_date');
+        const idxTime  = header.indexOf('acq_time');
+        // Берём только high-confidence (nominal/high), сортируем по FRP desc, top-15
+        const fires = [];
+        for (let i = 1; i < lines.length; i++) {
+            const c = lines[i].split(',');
+            const conf = (c[idxConf] || '').toLowerCase();
+            if (conf !== 'h' && conf !== 'high' && conf !== 'n' && conf !== 'nominal') continue;
+            const frp = parseFloat(c[idxFrp]) || 0;
+            const lat = parseFloat(c[idxLat]);
+            const lon = parseFloat(c[idxLon]);
+            const id = `${c[idxDate]}T${c[idxTime]}|${lat?.toFixed(2)}|${lon?.toFixed(2)}`;
+            fires.push({ id, lat, lon, frp });
+        }
+        fires.sort((a, b) => b.frp - a.frp);
+        for (const f of fires.slice(0, 15)) {
+            if (seenFirmsIds.has(f.id)) continue;
+            seenFirmsIds.add(f.id);
+            const type   = f.frp > 100 ? 'critical' : 'warning';
+            const prefix = f.frp > 100 ? '!!! CRITICAL: WILDFIRE HOTSPOT' : '>> DETECTED: WILDFIRE HOTSPOT';
+            const coord = `${f.lat.toFixed(1)}°${f.lat >= 0 ? 'N' : 'S'} ${Math.abs(f.lon).toFixed(1)}°${f.lon >= 0 ? 'E' : 'W'}`;
+            addLogEntry(`${prefix}: ${coord} | FRP ${f.frp.toFixed(0)} MW`, type, 'real');
+        }
+    } catch (_) { /* keep previous */ }
+}
+
 // === EMSC seismic feed (M >= 4.5, last 15) ===
 const EMSC_FEED = 'https://www.seismicportal.eu/fdsnws/event/1/query?format=json&minmag=4.5&orderby=time&limit=15';
 const seenEmscIds = new Set();
@@ -510,6 +612,61 @@ function renderLogEntry(message, type) {
     });
 }
 
+// === Lightning (geographically-weighted simulation) ===
+// Реального публичного realtime-фида молний с CORS нет (Blitzortung блокирует
+// non-org origin). Поэтому это симуляция: распределение хотспотов грубо
+// повторяет реальный мировой климатологический пик грозовой активности
+// (Конго, Маракайбо, Флорида, ЮВ Азия). В лог идёт только текстовая запись
+// в синем стиле, без overlay/анимаций.
+
+const LIGHTNING_HOTSPOTS = [
+    { name: 'Lake Maracaibo',     lat:   9.7, lon:  -71.6, weight: 14 },
+    { name: 'Congo Basin',        lat:  -1.0, lon:   23.0, weight: 18 },
+    { name: 'Singapore / SE Asia',lat:   1.4, lon:  103.8, weight: 12 },
+    { name: 'Northern Australia', lat: -13.0, lon:  132.0, weight: 6  },
+    { name: 'Florida, USA',       lat:  27.5, lon:  -82.0, weight: 7  },
+    { name: 'Himalayan foothills',lat:  28.0, lon:   84.0, weight: 6  },
+    { name: 'Argentine pampas',   lat: -32.0, lon:  -62.0, weight: 5  },
+    { name: 'Central African',    lat:   7.0, lon:   20.0, weight: 6  },
+    { name: 'Caribbean basin',    lat:  17.0, lon:  -75.0, weight: 4  },
+    { name: 'Open ocean (ITCZ)',  lat:   2.0, lon:  -25.0, weight: 3  },
+];
+
+function pickHotspot() {
+    const total = LIGHTNING_HOTSPOTS.reduce((s, h) => s + h.weight, 0);
+    let r = Math.random() * total;
+    for (const h of LIGHTNING_HOTSPOTS) {
+        r -= h.weight;
+        if (r <= 0) return h;
+    }
+    return LIGHTNING_HOTSPOTS[0];
+}
+
+function formatCoord(lat, lon) {
+    const ns = lat >= 0 ? 'N' : 'S';
+    const ew = lon >= 0 ? 'E' : 'W';
+    return `${Math.abs(lat).toFixed(1)}°${ns} ${Math.abs(lon).toFixed(1)}°${ew}`;
+}
+
+function strikeLightning() {
+    const spot = pickHotspot();
+    const lat = spot.lat + (Math.random() - 0.5) * 8;
+    const lon = spot.lon + (Math.random() - 0.5) * 12;
+    addLogEntry(`>> STRIKE: ${formatCoord(lat, lon)} | ${spot.name}`, 'lightning', 'deco');
+}
+
+function startLightningEngine() {
+    // Один удар каждые ~5–12 секунд, рваный темп. ~6-12 строк в минуту в логе.
+    function scheduleNext() {
+        const delay = 5000 + Math.random() * 7000;
+        setTimeout(() => {
+            strikeLightning();
+            scheduleNext();
+        }, delay);
+    }
+    scheduleNext();
+}
+
 // === Wake Lock (keep screen on, especially on iPad) ===
 function setupWakeLock() {
     const NoSleepCtor = window['NoSleep'];
@@ -543,6 +700,10 @@ async function init() {
     addLogEntry('Connecting to NOAA SWPC space weather...', 'system');
     addLogEntry('Connecting to GDACS global disaster feed...', 'system');
     addLogEntry('Connecting to EMSC seismic portal...', 'system');
+    addLogEntry('Connecting to NWS active alerts (US)...', 'system');
+    if (FIRMS_MAP_KEYS.length) {
+        addLogEntry('Connecting to NASA FIRMS fire hotspot feed...', 'system');
+    }
 
     updateClock();
     setInterval(updateClock, 1000);
@@ -564,6 +725,10 @@ async function init() {
         fetchSwpcAlerts().then(() => addLogEntry('NOAA SWPC space weather feed online.', 'info')),
         fetchGdacsEvents().then(() => addLogEntry('GDACS global disaster feed online.', 'info')),
         fetchEmscEvents().then(() => addLogEntry('EMSC seismic portal online.', 'info')),
+        fetchNwsAlerts().then(() => addLogEntry('NWS active alerts feed online.', 'info')),
+        fetchFirmsFires().then(() => {
+            if (FIRMS_MAP_KEYS.length) addLogEntry('NASA FIRMS fire hotspot feed online.', 'info');
+        }),
     ]);
 
     addLogEntry('All systems operational. Monitoring active.', 'info');
@@ -577,8 +742,13 @@ async function init() {
     setInterval(fetchSwpcAlerts,   5 * 60 * 1000);   // 5 минут
     setInterval(fetchGdacsEvents, 10 * 60 * 1000);   // 10 минут
     setInterval(fetchEmscEvents,   2 * 60 * 1000);   // 2 минуты
+    setInterval(fetchNwsAlerts,    3 * 60 * 1000);   // 3 минуты
+    setInterval(fetchFirmsFires,  15 * 60 * 1000);   // 15 минут
     setInterval(generateRandomEvent, 30 * 1000);     // декорация: раз в 30 с
     setInterval(emitSystemHeartbeat, 10 * 1000);     // системная телеметрия: раз в 10 с
+
+    // Молнии — отдельный декоративный движок (см. секцию Lightning).
+    startLightningEngine();
 }
 
 document.addEventListener('DOMContentLoaded', init);
